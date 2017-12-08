@@ -606,10 +606,6 @@ _Py_SetLocaleFromEnv(int category)
  * safe to call without calling Py_Initialize first)
  */
 
-/* TODO: Progressively move functionality from Py_BeginInitialization to
- * Py_ReadConfig and Py_EndInitialization
- */
-
 _PyInitError
 _Py_InitializeCore(const _PyCoreConfig *config)
 {
@@ -755,7 +751,7 @@ _Py_InitializeCore(const _PyCoreConfig *config)
     PySys_SetObject("__stderr__", pstderr);
     Py_DECREF(pstderr);
 
-    err = _PyImport_Init();
+    err = _PyImport_Init(interp);
     if (_Py_INIT_FAILED(err)) {
         return err;
     }
@@ -804,7 +800,12 @@ _PyMainInterpreterConfig_Read(_PyMainInterpreterConfig *config)
     }
 
     if (config->program_name == NULL) {
-        config->program_name = _PyMem_RawWcsdup(Py_GetProgramName());
+#ifdef MS_WINDOWS
+        const wchar_t *program_name = L"python";
+#else
+        const wchar_t *program_name = L"python3";
+#endif
+        config->program_name = _PyMem_RawWcsdup(program_name);
         if (config->program_name == NULL) {
             return _Py_INIT_NO_MEMORY();
         }
@@ -876,10 +877,9 @@ _Py_InitializeMainInterpreter(const _PyMainInterpreterConfig *config)
         return _Py_INIT_OK();
     }
 
-    /* TODO: Report exceptions rather than fatal errors below here */
-
-    if (_PyTime_Init() < 0)
+    if (_PyTime_Init() < 0) {
         return _Py_INIT_ERR("can't initialize time");
+    }
 
     /* GetPath may initialize state that _PySys_EndInit locks
        in, and so has to be called first. */
@@ -1103,6 +1103,10 @@ Py_FinalizeEx(void)
     tstate = PyThreadState_GET();
     interp = tstate->interp;
 
+    /* Copy the core config to be able to use it even
+       after PyInterpreterState_Delete() */
+    _PyCoreConfig core_config = interp->core_config;
+
     /* Remaining threads (e.g. daemon threads) will automatically exit
        after taking the GIL (in PyEval_RestoreThread()). */
     _PyRuntime.finalizing = tstate;
@@ -1186,7 +1190,7 @@ Py_FinalizeEx(void)
     _PyHash_Fini();
 
 #ifdef Py_REF_DEBUG
-    if (interp->core_config.show_ref_count) {
+    if (core_config.show_ref_count) {
         _PyDebug_PrintTotalRefs();
     }
 #endif
@@ -1197,8 +1201,9 @@ Py_FinalizeEx(void)
      * Alas, a lot of stuff may still be alive now that will be cleaned
      * up later.
      */
-    if (Py_GETENV("PYTHONDUMPREFS"))
+    if (core_config.dump_refs) {
         _Py_PrintReferences(stderr);
+    }
 #endif /* Py_TRACE_REFS */
 
     /* Clear interpreter state and all thread states. */
@@ -1260,14 +1265,13 @@ Py_FinalizeEx(void)
      * An address can be used to find the repr of the object, printed
      * above by _Py_PrintReferences.
      */
-    if (Py_GETENV("PYTHONDUMPREFS"))
+    if (core_config.dump_refs) {
         _Py_PrintReferenceAddresses(stderr);
+    }
 #endif /* Py_TRACE_REFS */
 #ifdef WITH_PYMALLOC
-    if (_PyMem_PymallocEnabled()) {
-        char *opt = Py_GETENV("PYTHONMALLOCSTATS");
-        if (opt != NULL && *opt != '\0')
-            _PyObject_DebugMallocStats(stderr);
+    if (core_config.malloc_stats) {
+        _PyObject_DebugMallocStats(stderr);
     }
 #endif
 
